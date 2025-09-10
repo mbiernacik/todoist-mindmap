@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <title>Todoist → Mindmap (PWA)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#0a66c2" />
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #mind { height: 100%; }
+    .markmap > svg { width: 100%; height: 100vh; }
+  </style>
+  <script>
+    // Markmap autoloader
+    window.markmap = { autoLoader: { manual: true, toolbar: true } };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/markmap-autoloader@latest"></script>
+  <script>
+    // Rejestracja service workera
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("/service-worker.js");
+      });
+    }
+  </script>
+</head>
+<body>
+<div id="mind" class="markmap">
+  <script type="text/template" id="mdsrc">
+# Ładowanie...
+  </script>
+</div>
+
+<script>
+  function getUrlParams() {
+    const u = new URL(window.location.href);
+    return {
+      token: u.searchParams.get('token')?.trim() || '',
+      projectId: u.searchParams.get('project_id')?.trim() || '',
+      extra: u.searchParams.get('extra')?.trim() || ''
+    };
+  }
+  function ensureMdScript() {
+    let el = document.getElementById('mdsrc');
+    if (!el) {
+      const wrap = document.getElementById('mind') || document.body;
+      el = document.createElement('script');
+      el.type = 'text/template';
+      el.id = 'mdsrc';
+      wrap.appendChild(el);
+    }
+    return el;
+  }
+  function setMarkdown(md) { ensureMdScript().textContent = md; }
+  function escapeMd(text) { return (text || '').replace(/([\*\_\`\[\]\#\<\>])/g, '\\$1'); }
+
+  // Deep links
+  const projectLink = (id) => `todoist://project?id=${encodeURIComponent(id)}`;
+  const taskLink = (id) => `todoist://task?id=${encodeURIComponent(id)}`;
+  const asMdLink = (t, href) => `[${t}](${href})`;
+
+  function priorityName(p) {
+    const names = {1:'P1',2:'P2',3:'P3',4:'P4'};
+    return names[p] || 'P?';
+  }
+  function taskTitleWithMeta(t) {
+    const meta = [];
+    if (t.labels && t.labels.length) meta.push('[' + t.labels.join(', ') + ']');
+    if (t.priority) meta.push(priorityName(t.priority));
+    if (t.due && t.due.date) meta.push(t.due.date);
+    const suffix = meta.length ? ' — ' + meta.join(' · ') : '';
+    return `${escapeMd(t.content)}${suffix}`;
+  }
+
+  // API
+  async function fetchAllProjects(token) {
+    const r = await fetch('https://api.todoist.com/rest/v2/projects', {
+      headers: { Authorization: 'Bearer ' + token }
+    });
+    if (!r.ok) throw new Error('Błąd pobierania projektów: ' + r.status);
+    return r.json();
+  }
+  async function fetchTasksForProject(token, projectId, extraQuery) {
+    const url = new URL('https://api.todoist.com/rest/v2/tasks');
+    if (projectId) url.searchParams.set('project_id', projectId);
+    if (extraQuery && extraQuery.trim()) {
+      for (const kv of extraQuery.split('&')) {
+        const [k, v] = kv.split('=');
+        if (k && v !== undefined) url.searchParams.set(k.trim(), v.trim());
+      }
+    }
+    const r = await fetch(url.toString(), { headers: { Authorization: 'Bearer ' + token } });
+    if (!r.ok) throw new Error('Błąd pobierania zadań: ' + r.status);
+    return r.json();
+  }
+
+  // Projekty
+  function buildProjectTree(projects) {
+    const byId = new Map(projects.map(p => [p.id, { ...p, children: [] }]));
+    const roots = [];
+    for (const p of projects) {
+      if (p.parent_id && byId.has(p.parent_id)) byId.get(p.parent_id).children.push(byId.get(p.id));
+      else roots.push(byId.get(p.id));
+    }
+    return { byId, roots };
+  }
+  function collectDescendantProjectIds(byId, startId) {
+    const result = [];
+    const start = byId.get(startId);
+    if (!start) return result;
+    const q = [start];
+    while (q.length) {
+      const p = q.shift();
+      result.push(p.id);
+      if (p.children && p.children.length) q.push(...p.children);
+    }
+    return result;
+  }
+
+  // Zadania
+  function buildTaskTree(tasks) {
+    const byId = new Map();
+    const roots = [];
+    for (const t of tasks) {
+      byId.set(t.id, { id: t.id, parent_id: t.parent_id || null, task: t, children: [] });
+    }
+    for (const t of tasks) {
+      const n = byId.get(t.id);
+      if (t.parent_id && byId.has(t.parent_id)) byId.get(t.parent_id).children.push(n);
+      else roots.push(n);
+    }
+    return { byId, roots };
+  }
+  function pushTaskTreeMarkdown(lines, node, depth) {
+    const indent = '  '.repeat(depth);
+    const title = taskTitleWithMeta(node.task);
+    const href = taskLink(node.task.id);
+    lines.push(`${indent}- ${asMdLink(title, href)}`);
+    if (node.children && node.children.length) {
+      for (const ch of node.children) pushTaskTreeMarkdown(lines, ch, depth + 1);
+    }
+  }
+
+  // Render Markdown (projekty jako węzły)
+  function buildMarkdownProjectsNodes({ rootProjectId, projectTree, projectsById, allTasksByProject }) {
+    const lines = [];
+    const rootProject = rootProjectId ? projectsById.get(rootProjectId) : null;
+    const rootTitle = rootProject ? asMdLink(escapeMd(rootProject.name), projectLink(rootProjectId)) : 'Wszystkie projekty';
+    lines.push('# ' + rootTitle);
+
+    if (!rootProjectId) {
+      if (!projectTree.roots.length) {
+        lines.push('- Brak projektów');
+        return lines.join('\n');
+      }
+      for (const rp of projectTree.roots) {
+        lines.push(`## ${asMdLink(escapeMd(rp.name), projectLink(rp.id))}`);
+      }
+      return lines.join('\n');
+    }
+
+    const projectIds = collectDescendantProjectIds(projectTree.byId, rootProjectId);
+    if (!projectIds.length) {
+      lines.push('- Brak projektów potomnych');
+      return lines.join('\n');
+    }
+
+    for (const pid of projectIds) {
+      const p = projectsById.get(pid);
+      lines.push(`## ${asMdLink(escapeMd(p?.name || ('Projekt ' + pid)), projectLink(pid))}`);
+
+      const tasks = allTasksByProject.get(pid) || [];
+      if (!tasks.length) {
+        lines.push('- Brak zadań');
+        continue;
+      }
+      const tree = buildTaskTree(tasks);
+      for (const n of tree.roots) pushTaskTreeMarkdown(lines, n, 0);
+    }
+    return lines.join('\n');
+  }
+
+  (async function main() {
+    try {
+      const { token, projectId, extra } = getUrlParams();
+      if (!token) {
+        setMarkdown('# Brak tokenu w URL\n- Użyj ?token=XXX&project_id=1234567890');
+        window.markmap.autoLoader.renderAll();
+        return;
+      }
+
+      const projects = await fetchAllProjects(token);
+      const projectTree = buildProjectTree(projects);
+      const projectsById = new Map(projects.map(p => [p.id, p]));
+
+      let md = '';
+      if (projectId) {
+        const projectIds = collectDescendantProjectIds(projectTree.byId, projectId);
+        if (!projectIds.length) {
+          const title = projectsById.get(projectId)?.name || ('Projekt ' + projectId);
+          md = `# ${asMdLink(escapeMd(title), projectLink(projectId))}\n- Brak podprojektów`;
+        } else {
+          const taskLists = await Promise.all(projectIds.map(pid => fetchTasksForProject(token, pid, extra)));
+          const allTasksByProject = new Map(projectIds.map((pid, i) => [pid, taskLists[i] || []]));
+          md = buildMarkdownProjectsNodes({
+            rootProjectId: projectId,
+            projectTree,
+            projectsById,
+            allTasksByProject
+          });
+        }
+      } else {
+        md = buildMarkdownProjectsNodes({
+          rootProjectId: null,
+          projectTree,
+          projectsById,
+          allTasksByProject: new Map()
+        });
+      }
+
+      setMarkdown(md);
+      window.markmap.autoLoader.renderAll();
+    } catch (e) {
+      console.error(e);
+      setMarkdown('# Błąd\n- ' + (e.message || e));
+      window.markmap.autoLoader.renderAll();
+    }
+  })();
+</script>
+</body>
+</html>
