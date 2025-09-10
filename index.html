@@ -228,5 +228,44 @@
     }
   })();
 </script>
+<script>
+// Przechwyć kliknięcia w linki Todoist i spróbuj uruchomić appkę przez todoist://, z fallbackiem do web
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('a');
+  if (!a) return;
+
+  const href = a.getAttribute('href') || '';
+  const isTaskWeb = href.startsWith('https://todoist.com/app/task/');
+  const isProjWeb = href.startsWith('https://todoist.com/app/project/');
+  if (!(isTaskWeb || isProjWeb)) return; // obsługujemy tylko linki Todoist
+
+  // Wyciągnij ID
+  let id = href.split('/').pop();
+  if (!id) return;
+
+  const deep = isTaskWeb
+    ? `todoist://task?id=${encodeURIComponent(id)}`
+    : `todoist://project?id=${encodeURIComponent(id)}`;
+
+  // iOS/Safari/PWA: spróbuj deeplink; jeśli appka nie przejmie, wróć do web po ~600ms
+  e.preventDefault();
+  let navigated = false;
+  const fallback = setTimeout(() => {
+    if (!navigated) window.location.href = href;
+  }, 600);
+
+  // Próba uruchomienia aplikacji
+  try {
+    window.location.href = deep;
+    // Jeżeli appka przejmie, PWA zwykle trafia do tła i fallback się nie wykona
+    // Dla pewności ustaw znacznik po krótkim czasie
+    setTimeout(() => { navigated = true; }, 50);
+  } catch (_) {
+    clearTimeout(fallback);
+    window.location.href = href; // fallback natychmiast
+  }
+});
+</script>
+
 </body>
 </html>
