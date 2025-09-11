@@ -1,27 +1,15 @@
 <!doctype html>
 <html lang="pl">
-
 <head>
   <meta charset="utf-8" />
-  <title>Todoist → Mindmap (PWA, ikony priorytetów, daty, tagi)</title>
+  <title>Todoist → Mindmap (API v1, PWA)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="manifest" href="/manifest.webmanifest">
   <meta name="theme-color" content="#0a66c2" />
   <style>
-    html,
-    body {
-      height: 100%;
-      margin: 0;
-    }
-
-    #mind {
-      height: 100%;
-    }
-
-    .markmap>svg {
-      width: 100%;
-      height: 100vh;
-    }
+    html, body { height: 100%; margin: 0; }
+    #mind { height: 100%; }
+    .markmap > svg { width: 100%; height: 100vh; }
   </style>
   <script>
     window.markmap = { autoLoader: { manual: true, toolbar: true } };
@@ -35,285 +23,288 @@
     }
   </script>
 </head>
-
 <body>
-  <div id="mind" class="markmap">
-    <script type="text/template" id="mdsrc">
+<div id="mind" class="markmap">
+  <script type="text/template" id="mdsrc">
 # Ładowanie...
   </script>
-  </div>
+</div>
 
-  <script>
-    // ====== URL params ======
-    function getUrlParams() {
-      const u = new URL(window.location.href);
-      return {
-        token: u.searchParams.get('token')?.trim() || '',
-        projectId: u.searchParams.get('project_id')?.trim() || '',
-        extra: u.searchParams.get('extra')?.trim() || ''
-      };
+<script>
+  // ====== Konfiguracja ======
+  const API_BASE = 'https://api.todoist.com/api/v1'; // nowe API v1 [21][3]
+  const projectWeb = (id) => `https://app.todoist.com/app/project/${encodeURIComponent(id)}`; // Universal Links [22]
+  const taskWeb = (id) => `https://app.todoist.com/app/task/${encodeURIComponent(id)}`; // Universal Links [22]
+  const asMdLink = (t, href) => `[${t}](${href})`; // Markmap obsługuje linki MD [7]
+
+  // ====== URL params ======
+  function getUrlParams() {
+    const u = new URL(window.location.href);
+    return {
+      token: u.searchParams.get('token')?.trim() || '',
+      projectId: u.searchParams.get('project_id')?.trim() || '',
+      extra: u.searchParams.get('extra')?.trim() || '' // przekazujemy do /tasks jako query
+    };
+  }
+  function ensureMdScript() {
+    let el = document.getElementById('mdsrc');
+    if (!el) {
+      const wrap = document.getElementById('mind') || document.body;
+      el = document.createElement('script');
+      el.type = 'text/template';
+      el.id = 'mdsrc';
+      wrap.appendChild(el);
     }
-    function ensureMdScript() {
-      let el = document.getElementById('mdsrc');
-      if (!el) {
-        const wrap = document.getElementById('mind') || document.body;
-        el = document.createElement('script');
-        el.type = 'text/template';
-        el.id = 'mdsrc';
-        wrap.appendChild(el);
+    return el;
+  }
+  function setMarkdown(md) { ensureMdScript().textContent = md; }
+  function escapeMd(text) { return (text || '').replace(/([\*\_\`\[\]\#\<\>])/g, '\\$1'); }
+
+  // ====== Format: daty, tagi, priorytet ======
+  function formatDue(due) {
+    if (!due || !due.date) return null;
+    const s = String(due.date).slice(0, 10);
+    const [y,m,d] = s.split('-');
+    if (!y || !m || !d) return null;
+    return `${d}.${m}.${y}`;
+  }
+  function formatLabels(labels) {
+    if (!labels || !labels.length) return null;
+    const arr = labels.map(l => '@' + l);
+    return `[${arr.join(', ')}]`;
+  }
+  // Kolorowa kropka: P1 brak; P2 niebieska; P3 pomarańczowa; P4 czerwona
+  function priorityDot(p) {
+    if (!p || p === 1) return '';
+    const color = p === 2 ? '#1e88e5' : (p === 3 ? '#fb8c00' : '#e53935');
+    return `<span style="color:${color}">●</span> `;
+  }
+
+  // ====== Tytuł zadania ======
+  function taskTitleWithMeta(t, childCount) {
+    const parts = [];
+    let title = '';
+    title += priorityDot(t.priority);
+    title += escapeMd(t.content || '');
+    const dueStr = formatDue(t.due);
+    if (dueStr) parts.push(dueStr);
+    const labelsStr = formatLabels(t.labels);
+    if (labelsStr) parts.push(labelsStr);
+    const meta = parts.length ? ' — ' + parts.join(' · ') : '';
+    const count = childCount && childCount > 0 ? ` (${childCount})` : '';
+    return `${title}${meta}${count}`;
+  }
+
+  // ====== Wywołania API v1 (bez bibliotek) ======
+  async function fetchAllProjects(token) {
+    const r = await fetch(`${API_BASE}/projects`, {
+      headers: { Authorization: 'Bearer ' + token }
+    });
+    if (!r.ok) throw new Error('Błąd pobierania projektów: ' + r.status);
+    return r.json();
+  }
+  async function fetchSectionsForProject(token, projectId) {
+    const url = new URL(`${API_BASE}/sections`);
+    if (projectId) url.searchParams.set('project_id', projectId);
+    const r = await fetch(url.toString(), {
+      headers: { Authorization: 'Bearer ' + token }
+    });
+    if (!r.ok) throw new Error('Błąd pobierania sekcji: ' + r.status);
+    return r.json();
+  }
+  async function fetchTasksForProject(token, projectId, extraQuery) {
+    const url = new URL(`${API_BASE}/tasks`);
+    if (projectId) url.searchParams.set('project_id', projectId);
+    if (extraQuery && extraQuery.trim()) {
+      for (const kv of extraQuery.split('&')) {
+        const [k, v] = kv.split('=');
+        if (k && v !== undefined) url.searchParams.set(k.trim(), v.trim());
       }
-      return el;
     }
-    function setMarkdown(md) { ensureMdScript().textContent = md; }
-    function escapeMd(text) { return (text || '').replace(/([\*\_\`\[\]\#\<\>])/g, '\\$1'); }
+    const r = await fetch(url.toString(), { headers: { Authorization: 'Bearer ' + token } });
+    if (!r.ok) throw new Error('Błąd pobierania zadań: ' + r.status);
+    return r.json();
+  }
+  // Uwaga: API v1 zwraca id (potencjalnie w nowej postaci), project_id, section_id, parent_id, due, labels, priority (spójne z dotychczas używanymi polami) [3]
 
-    // ====== Links ======
-    const projectWeb = (id) => `https://app.todoist.com/app/project/${encodeURIComponent(id)}`;
-    const taskWeb = (refOrId) => `https://app.todoist.com/app/task/${encodeURIComponent(refOrId)}`;
-    const asMdLink = (t, href) => `[${t}](${href})`; // Markmap linki MD [1][4]
+  // ====== Drzewa: projekty i zadania ======
+  function buildProjectTree(projects) {
+    const byId = new Map(projects.map(p => [p.id, { ...p, children: [] }]));
+    const roots = [];
+    for (const p of projects) {
+      if (p.parent_id && byId.has(p.parent_id)) byId.get(p.parent_id).children.push(byId.get(p.id));
+      else roots.push(byId.get(p.id));
+    }
+    return { byId, roots };
+  }
+  function collectDescendantProjectIds(byId, startId) {
+    const result = [];
+    const start = byId.get(startId);
+    if (!start) return result;
+    const q = [start];
+    while (q.length) {
+      const p = q.shift();
+      result.push(p.id);
+      if (p.children && p.children.length) q.push(...p.children);
+    }
+    return result;
+  }
 
-    // ====== Formatowanie daty i tagów ======
-    function formatDue(due) {
-      if (!due || !due.date) return null;
-      // due.date może być YYYY-MM-DD lub ISO
-      const s = due.date.slice(0, 10);
-      const [y, m, d] = s.split('-');
-      if (!y || !m || !d) return null;
-      return `${d}.${m}.${y}`;
+  function buildTaskTree(tasks) {
+    const byId = new Map();
+    const roots = [];
+    for (const t of tasks) byId.set(t.id, { id: t.id, parent_id: t.parent_id || null, task: t, children: [] });
+    for (const t of tasks) {
+      const n = byId.get(t.id);
+      if (t.parent_id && byId.has(t.parent_id)) byId.get(t.parent_id).children.push(n);
+      else roots.push(n);
     }
-    function formatLabels(labels) {
-      if (!labels || !labels.length) return null;
-      const arr = labels.map(l => '@' + l);
-      return `[${arr.join(', ')}]`;
+    return { byId, roots };
+  }
+  function countDescendants(node) {
+    let cnt = 0;
+    if (node.children && node.children.length) {
+      cnt += node.children.length;
+      for (const ch of node.children) cnt += countDescendants(ch);
     }
+    return cnt;
+  }
+  function pushTaskTreeMarkdown(lines, node, depth) {
+    const indent = '  '.repeat(depth);
+    const directChildren = (node.children?.length || 0);
+    const title = taskTitleWithMeta(node.task, directChildren);
+    const href = taskWeb(node.task.id);
+    lines.push(`${indent}- ${asMdLink(title, href)}`);
+    if (directChildren) for (const ch of node.children) pushTaskTreeMarkdown(lines, ch, depth + 1);
+  }
 
-    function priorityDot(p) {
-      if (!p || p === 1) return ''; // bez kropki dla P1
-      const color = p === 2 ? '#1e88e5' : (p === 3 ? '#fb8c00' : '#e53935');
-      // U+25CF '●' czarne, kolor nadamy przez style color
-      return `<span style="color:${color}">●</span> `;
-    }
-
-    function taskTitleWithMeta(t, childCount) {
-      const parts = [];
-      let title = '';
-      // Ikona priorytetu jako kolorowa kropka na początku (pozwala lepiej skanować)
-      title += priorityDot(t.priority);
-      // Nazwa zadania
-      title += escapeMd(t.content);
-      // Data dd.MM.YYYY
-      const dueStr = formatDue(t.due);
-      if (dueStr) parts.push(dueStr);
-      // Etykiety [@tag1, @tag2]
-      const labelsStr = formatLabels(t.labels);
-      if (labelsStr) parts.push(labelsStr);
-      const meta = parts.length ? ' — ' + parts.join(' · ') : '';
-      const count = childCount && childCount > 0 ? ` (${childCount})` : '';
-      return `${title}${meta}${count}`;
-    }
-
-    // ====== Todoist API ======
-    async function fetchAllProjects(token) {
-      const r = await fetch('https://api.todoist.com/rest/v2/projects', {
-        headers: { Authorization: 'Bearer ' + token }
-      });
-      if (!r.ok) throw new Error('Błąd pobierania projektów: ' + r.status);
-      return r.json();
-    }
-    async function fetchAllSections(token) {
-      const r = await fetch('https://api.todoist.com/rest/v2/sections', {
-        headers: { Authorization: 'Bearer ' + token }
-      });
-      if (!r.ok) throw new Error('Błąd pobierania sekcji: ' + r.status);
-      return r.json();
-    }
-    async function fetchTasksForProject(token, projectId, extraQuery) {
-      const url = new URL('https://api.todoist.com/rest/v2/tasks');
-      if (projectId) url.searchParams.set('project_id', projectId);
-      if (extraQuery && extraQuery.trim()) {
-        for (const kv of extraQuery.split('&')) {
-          const [k, v] = kv.split('=');
-          if (k && v !== undefined) url.searchParams.set(k.trim(), v.trim());
-        }
+  // ====== Sekcje i zadania na jednym poziomie ======
+  function buildMarkdownProjectFlatLevel({ sectionsById, allTasksInProject }) {
+    const out = [];
+    const bySection = new Map();
+    const noSection = [];
+    for (const t of allTasksInProject) {
+      if (t.section_id && sectionsById.has(t.section_id)) {
+        if (!bySection.has(t.section_id)) bySection.set(t.section_id, []);
+        bySection.get(t.section_id).push(t);
+      } else {
+        noSection.push(t);
       }
-      const r = await fetch(url.toString(), { headers: { Authorization: 'Bearer ' + token } });
-      if (!r.ok) throw new Error('Błąd pobierania zadań: ' + r.status);
-      return r.json();
     }
-    // Sekcje i pola section_id/due/labels/priority są w REST v2 [7][8]
-
-    // ====== Projects tree ======
-    function buildProjectTree(projects) {
-      const byId = new Map(projects.map(p => [p.id, { ...p, children: [] }]));
-      const roots = [];
-      for (const p of projects) {
-        if (p.parent_id && byId.has(p.parent_id)) byId.get(p.parent_id).children.push(byId.get(p.id));
-        else roots.push(byId.get(p.id));
-      }
-      return { byId, roots };
+    // Zadania bez sekcji na poziomie projektu
+    if (noSection.length) {
+      const treeNo = buildTaskTree(noSection);
+      for (const n of treeNo.roots) pushTaskTreeMarkdown(out, n, 0);
     }
-    function collectDescendantProjectIds(byId, startId) {
-      const result = [];
-      const start = byId.get(startId);
-      if (!start) return result;
-      const q = [start];
-      while (q.length) {
-        const p = q.shift();
-        result.push(p.id);
-        if (p.children && p.children.length) q.push(...p.children);
-      }
-      return result;
+    // Sekcje jako pseudo‑zadania [Nazwa] (N = liczba elementów w sekcji)
+    for (const [sid, tasks] of bySection) {
+      const sName = sectionsById.get(sid).name;
+      const sectionTree = buildTaskTree(tasks);
+      let totalInSection = 0;
+      for (const root of sectionTree.roots) totalInSection += 1 + countDescendants(root);
+      out.push(`- ${escapeMd('[' + sName + ']')} (${totalInSection})`);
+      for (const n of sectionTree.roots) pushTaskTreeMarkdown(out, n, 1);
     }
+    return out;
+  }
 
-    // ====== Task tree by parent_id ======
-    function buildTaskTree(tasks) {
-      const byId = new Map();
-      const roots = [];
-      for (const t of tasks) byId.set(t.id, { id: t.id, parent_id: t.parent_id || null, task: t, children: [] });
-      for (const t of tasks) {
-        const n = byId.get(t.id);
-        if (t.parent_id && byId.has(t.parent_id)) byId.get(t.parent_id).children.push(n);
-        else roots.push(n);
-      }
-      return { byId, roots };
-    }
-    function countDescendants(node) {
-      let cnt = 0;
-      if (node.children && node.children.length) {
-        cnt += node.children.length;
-        for (const ch of node.children) cnt += countDescendants(ch);
-      }
-      return cnt;
-    }
+  // ====== Render całości ======
+  function buildMarkdownProjectsFlatWithSections({ rootProjectId, projectTree, projectsById, allTasksByProject, sectionsById }) {
+    const lines = [];
+    const rootProject = rootProjectId ? projectsById.get(rootProjectId) : null;
+    lines.push('# ' + (rootProject ? asMdLink(escapeMd(rootProject.name), projectWeb(rootProjectId)) : 'Wszystkie projekty'));
 
-    function pushTaskTreeMarkdown(lines, node, depth) {
-      const indent = '  '.repeat(depth);
-      const directChildren = (node.children?.length || 0);
-      const title = taskTitleWithMeta(node.task, directChildren);
-      const href = taskWeb(node.task.id);
-      lines.push(`${indent}- ${asMdLink(title, href)}`);
-      if (directChildren) for (const ch of node.children) pushTaskTreeMarkdown(lines, ch, depth + 1);
-    }
-
-    // ====== Sekcje i zadania na jednym poziomie (bez [Bez sekcji]) ======
-    function buildMarkdownProjectFlatLevel({ sectionsById, allTasksInProject }) {
-      const out = [];
-      const bySection = new Map();
-      const noSection = [];
-      for (const t of allTasksInProject) {
-        if (t.section_id && sectionsById.has(t.section_id)) {
-          if (!bySection.has(t.section_id)) bySection.set(t.section_id, []);
-          bySection.get(t.section_id).push(t);
-        } else {
-          noSection.push(t);
-        }
-      }
-
-      // 1) Zwykłe zadania bez sekcji na poziomie projektu
-      if (noSection.length) {
-        const treeNo = buildTaskTree(noSection);
-        for (const n of treeNo.roots) pushTaskTreeMarkdown(out, n, 0);
-      }
-
-      // 2) Sekcje jako pseudo‑zadania [Nazwa] (N = liczba wszystkich elementów w sekcji)
-      for (const [sid, tasks] of bySection) {
-        const sName = sectionsById.get(sid).name;
-        const sectionTree = buildTaskTree(tasks);
-        let totalInSection = 0;
-        for (const root of sectionTree.roots) totalInSection += 1 + countDescendants(root);
-        out.push(`- ${escapeMd('[' + sName + ']')} (${totalInSection})`);
-        for (const n of sectionTree.roots) pushTaskTreeMarkdown(out, n, 1);
-      }
-      return out;
-    }
-
-    // ====== Render: projekty → (zadania bez sekcji) + ([Sekcja] (N) → zadania sekcji) ======
-    function buildMarkdownProjectsFlatWithSections({ rootProjectId, projectTree, projectsById, allTasksByProject, sectionsById }) {
-      const lines = [];
-      const rootProject = rootProjectId ? projectsById.get(rootProjectId) : null;
-      lines.push('# ' + (rootProject ? asMdLink(escapeMd(rootProject.name), projectWeb(rootProjectId)) : 'Wszystkie projekty'));
-
-      if (!rootProjectId) {
-        if (!projectTree.roots.length) { lines.push('- Brak projektów'); return lines.join('\n'); }
-        for (const rp of projectTree.roots) lines.push(`## ${asMdLink(escapeMd(rp.name), projectWeb(rp.id))}`);
-        return lines.join('\n');
-      }
-
-      const projectIds = collectDescendantProjectIds(projectTree.byId, rootProjectId);
-      if (!projectIds.length) { lines.push('- Brak projektów potomnych'); return lines.join('\n'); }
-
-      for (const pid of projectIds) {
-        const p = projectsById.get(pid);
-        const tasks = allTasksByProject.get(pid) || [];
-        let totalInProject = 0;
-        if (tasks.length) {
-          const treeAll = buildTaskTree(tasks);
-          for (const r of treeAll.roots) totalInProject += 1 + countDescendants(r);
-        }
-        lines.push(`## ${asMdLink(escapeMd(p?.name || ('Projekt ' + pid)), projectWeb(pid))} ${totalInProject ? '(' + totalInProject + ')' : ''}`);
-
-        if (!tasks.length) { lines.push('- Brak zadań'); continue; }
-
-        const flat = buildMarkdownProjectFlatLevel({
-          sectionsById,
-          allTasksInProject: tasks
-        });
-        lines.push(...flat);
-      }
+    if (!rootProjectId) {
+      if (!projectTree.roots.length) { lines.push('- Brak projektów'); return lines.join('\n'); }
+      for (const rp of projectTree.roots) lines.push(`## ${asMdLink(escapeMd(rp.name), projectWeb(rp.id))}`);
       return lines.join('\n');
     }
 
-    // ====== Start ======
-    (async function main() {
-      try {
-        const { token, projectId, extra } = getUrlParams();
-        if (!token) {
-          setMarkdown('# Brak tokenu w URL\n- Użyj ?token=XXX&project_id=1234567890');
-          window.markmap.autoLoader.renderAll();
-          return;
-        }
+    const projectIds = collectDescendantProjectIds(projectTree.byId, rootProjectId);
+    if (!projectIds.length) { lines.push('- Brak projektów potomnych'); return lines.join('\n'); }
 
-        const [projects, sections] = await Promise.all([fetchAllProjects(token), fetchAllSections(token)]);
-        const projectTree = buildProjectTree(projects);
-        const projectsById = new Map(projects.map(p => [p.id, p]));
-        const sectionsById = new Map(sections.map(s => [s.id, s])); // [8]
+    for (const pid of projectIds) {
+      const p = projectsById.get(pid);
+      const tasks = allTasksByProject.get(pid) || [];
+      let totalInProject = 0;
+      if (tasks.length) {
+        const treeAll = buildTaskTree(tasks);
+        for (const r of treeAll.roots) totalInProject += 1 + countDescendants(r);
+      }
+      lines.push(`## ${asMdLink(escapeMd(p?.name || ('Projekt ' + pid)), projectWeb(pid))} ${totalInProject ? '(' + totalInProject + ')' : ''}`);
 
-        let md = '';
-        if (projectId) {
-          const projectIds = collectDescendantProjectIds(projectTree.byId, projectId);
-          if (!projectIds.length) {
-            const title = projectsById.get(projectId)?.name || ('Projekt ' + projectId);
-            md = `# ${asMdLink(escapeMd(title), projectWeb(projectId))}\n- Brak podprojektów`;
-          } else {
-            const taskLists = await Promise.all(projectIds.map(pid => fetchTasksForProject(token, pid, extra)));
-            const allTasksByProject = new Map(projectIds.map((pid, i) => [pid, taskLists[i] || []]));
-            md = buildMarkdownProjectsFlatWithSections({
-              rootProjectId: projectId,
-              projectTree,
-              projectsById,
-              sectionsById,
-              allTasksByProject
-            });
-          }
-        } else {
-          md = buildMarkdownProjectsFlatWithSections({
-            rootProjectId: null,
-            projectTree,
-            projectsById,
-            sectionsById,
-            allTasksByProject: new Map()
-          });
-        }
+      if (!tasks.length) { lines.push('- Brak zadań'); continue; }
 
+      const flat = buildMarkdownProjectFlatLevel({
+        sectionsById,
+        allTasksInProject: tasks
+      });
+      lines.push(...flat);
+    }
+    return lines.join('\n');
+  }
+
+  // ====== Start ======
+  (async function main() {
+    try {
+      const { token, projectId, extra } = getUrlParams();
+      if (!token) {
+        setMarkdown('# Brak tokenu w URL\n- Użyj ?token=XXX&project_id=1234567890');
+        window.markmap.autoLoader.renderAll();
+        return;
+      }
+
+      // Projekty
+      const projects = await fetchAllProjects(token);
+      const projectTree = buildProjectTree(projects);
+      const projectsById = new Map(projects.map(p => [p.id, p]));
+
+      if (!projectId) {
+        // Bez projectId: pokaż top-level projekty (bez zadań)
+        const md = buildMarkdownProjectsFlatWithSections({
+          rootProjectId: null,
+          projectTree,
+          projectsById,
+          sectionsById: new Map(),
+          allTasksByProject: new Map()
+        });
         setMarkdown(md);
         window.markmap.autoLoader.renderAll();
-      } catch (e) {
-        console.error(e);
-        setMarkdown('# Błąd\n- ' + (e.message || e));
-        window.markmap.autoLoader.renderAll();
+        return;
       }
-    })();
-  </script>
-</body>
 
+      const projectIds = collectDescendantProjectIds(projectTree.byId, projectId);
+      if (!projectIds.length) {
+        const title = projectsById.get(projectId)?.name || ('Projekt ' + projectId);
+        setMarkdown(`# ${asMdLink(escapeMd(title), projectWeb(projectId))}\n- Brak podprojektów`);
+        window.markmap.autoLoader.renderAll();
+        return;
+      }
+
+      // Sekcje i zadania dla wszystkich projektów docelowych
+      const sectionsLists = await Promise.all(projectIds.map(pid => fetchSectionsForProject(token, pid)));
+      const sectionsById = new Map();
+      sectionsLists.forEach(list => (list || []).forEach(s => sectionsById.set(s.id, s)));
+
+      const tasksLists = await Promise.all(projectIds.map(pid => fetchTasksForProject(token, pid, extra)));
+      const allTasksByProject = new Map(projectIds.map((pid, i) => [pid, tasksLists[i] || []]));
+
+      const md = buildMarkdownProjectsFlatWithSections({
+        rootProjectId: projectId,
+        projectTree,
+        projectsById,
+        sectionsById,
+        allTasksByProject
+      });
+
+      setMarkdown(md);
+      window.markmap.autoLoader.renderAll();
+    } catch (e) {
+      console.error(e);
+      setMarkdown('# Błąd\n- ' + (e.message || e));
+      window.markmap.autoLoader.renderAll();
+    }
+  })();
+</script>
+</body>
 </html>
