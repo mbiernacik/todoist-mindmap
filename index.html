@@ -68,8 +68,8 @@
     function escapeMd(text) { return (text || '').replace(/([\*\_\`\[\]\#\<\>])/g, '\\$1'); }
 
     // ====== Links ======
-    const projectWeb = (id) => `https://todoist.com/app/project/${encodeURIComponent(id)}`;
-    const taskWeb = (id) => `https://todoist.com/app/task/${encodeURIComponent(id)}`;
+    const projectWeb = (id) => `https://app.todoist.com/app/project/${encodeURIComponent(id)}`;
+    const taskWeb = (refOrId) => `https://app.todoist.com/app/task/${encodeURIComponent(refOrId)}`;
     const asMdLink = (t, href) => `[${t}](${href})`; // Markmap linki MD [1][4]
 
     // ====== Formatowanie daty i tagów ======
@@ -313,41 +313,6 @@
         window.markmap.autoLoader.renderAll();
       }
     })();
-
-    // ====== iOS deep-link handler z fallbackiem do web (capture) ======
-    document.addEventListener('click', function onDocClick(e) {
-      const a = e.target.closest('a');
-      if (!a) return;
-
-      const href = a.getAttribute('href') || '';
-      const isTaskWeb = href.startsWith('https://todoist.com/app/task/');
-      const isProjWeb = href.startsWith('https://todoist.com/app/project/');
-      if (!(isTaskWeb || isProjWeb)) return;
-
-      e.preventDefault();
-      e.stopPropagation();
-
-      const parts = href.split('/');
-      let id = parts[parts.length - 1];
-      if (!id) { window.location.href = href; return; }
-
-      const deep = isTaskWeb
-        ? `todoist://task?id=${encodeURIComponent(id)}`
-        : `todoist://project?id=${encodeURIComponent(id)}`;
-
-      let navigated = false;
-      const fallbackTimer = setTimeout(() => {
-        if (!navigated) window.location.href = href;
-      }, 700);
-
-      try {
-        window.location.href = deep;
-        setTimeout(() => { navigated = true; }, 80);
-      } catch {
-        clearTimeout(fallbackTimer);
-        window.location.href = href;
-      }
-    }, true);
   </script>
 </body>
 
